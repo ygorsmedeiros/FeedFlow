@@ -139,6 +139,51 @@ function Assert-NotificationsPackage {
     }
 }
 
+function Assert-ReportsPackage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [DateTime]$BuildStartedAtUtc
+    )
+
+    $artifact = Get-Item -LiteralPath $Path
+    if ($artifact.Length -le 0) {
+        throw 'O JAR da Lambda de relatórios foi gerado vazio.'
+    }
+    if ($artifact.LastWriteTimeUtc -lt $BuildStartedAtUtc.AddSeconds(-2)) {
+        throw 'O JAR da Lambda de relatórios não foi atualizado pelo build Maven atual.'
+    }
+
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($artifact.FullName)
+    try {
+        $entryNames = @($archive.Entries | ForEach-Object { $_.FullName })
+        $requiredEntries = @(
+            'br/com/feedflow/reports/handler/WeeklyReportHandler.class',
+            'br/com/feedflow/reports/application/WeeklyReportService.class',
+            'br/com/feedflow/reports/repository/DynamoDbFeedbackReportRepository.class',
+            'br/com/feedflow/reports/publishing/SnsReportPublisher.class',
+            'com/amazonaws/services/lambda/runtime/RequestHandler.class',
+            'software/amazon/awssdk/services/dynamodb/DynamoDbClient.class',
+            'software/amazon/awssdk/services/sns/SnsClient.class',
+            'software/amazon/awssdk/http/urlconnection/UrlConnectionHttpClient.class'
+        )
+
+        foreach ($requiredEntry in $requiredEntries) {
+            if ($entryNames -notcontains $requiredEntry) {
+                throw "Classe ou dependência obrigatória ausente do JAR de relatórios: $requiredEntry"
+            }
+        }
+    }
+    finally {
+        $archive.Dispose()
+    }
+}
+
 if (-not (Test-Path -LiteralPath $javaExecutable)) {
     throw "JDK 17 não encontrado em '$JavaHome'. Informe -JavaHome com o caminho correto."
 }
@@ -224,12 +269,48 @@ try {
         $notificationsArchive.Dispose()
     }
 
+    $reportsJar = Join-Path $repositoryRoot `
+        'feedflow-reports\target\feedflow-reports-1.0.0-SNAPSHOT.jar'
+    if (-not (Test-Path -LiteralPath $reportsJar)) {
+        throw 'O empacotamento não gerou o JAR da Lambda de relatórios.'
+    }
+
+    Assert-ReportsPackage `
+        -Path $reportsJar `
+        -BuildStartedAtUtc $buildStartedAtUtc
+
+    $reportsFunctionZip = Join-Path $repositoryRoot 'feedflow-reports\target\function.zip'
+    if (-not (Test-Path -LiteralPath $reportsFunctionZip)) {
+        throw 'O empacotamento não gerou o function.zip da Lambda de relatórios.'
+    }
+    $reportsZipArtifact = Get-Item -LiteralPath $reportsFunctionZip
+    if ($reportsZipArtifact.Length -le 0) {
+        throw 'O function.zip da Lambda de relatórios foi gerado vazio.'
+    }
+    if ($reportsZipArtifact.LastWriteTimeUtc -lt $buildStartedAtUtc.AddSeconds(-2)) {
+        throw 'O function.zip da Lambda de relatórios não foi atualizado pelo build Maven atual.'
+    }
+
+    $reportsArchive = [System.IO.Compression.ZipFile]::OpenRead($reportsZipArtifact.FullName)
+    try {
+        $expectedJarEntry = 'lib/feedflow-reports-1.0.0-SNAPSHOT.jar'
+        if (-not $reportsArchive.GetEntry($expectedJarEntry)) {
+            throw "JAR sombreado ausente do ZIP de relatórios: $expectedJarEntry"
+        }
+    }
+    finally {
+        $reportsArchive.Dispose()
+    }
+
     $artifact = Get-Item -LiteralPath $functionZip
     $artifactHash = Get-FileHash -Algorithm SHA256 -LiteralPath $functionZip
     $notificationsArtifact = Get-Item -LiteralPath $notificationsJar
     $notificationsArtifactHash = Get-FileHash -Algorithm SHA256 -LiteralPath $notificationsJar
     $notificationsZipArtifactHash = `
         Get-FileHash -Algorithm SHA256 -LiteralPath $notificationsFunctionZip
+    $reportsArtifact = Get-Item -LiteralPath $reportsJar
+    $reportsArtifactHash = Get-FileHash -Algorithm SHA256 -LiteralPath $reportsJar
+    $reportsZipArtifactHash = Get-FileHash -Algorithm SHA256 -LiteralPath $reportsFunctionZip
     Write-Output "FunctionZip=$($artifact.FullName)"
     Write-Output "FunctionZipBytes=$($artifact.Length)"
     Write-Output "FunctionZipSha256=$($artifactHash.Hash)"
@@ -239,6 +320,12 @@ try {
     Write-Output "NotificationsFunctionZip=$($notificationsZipArtifact.FullName)"
     Write-Output "NotificationsFunctionZipBytes=$($notificationsZipArtifact.Length)"
     Write-Output "NotificationsFunctionZipSha256=$($notificationsZipArtifactHash.Hash)"
+    Write-Output "ReportsJar=$($reportsArtifact.FullName)"
+    Write-Output "ReportsJarBytes=$($reportsArtifact.Length)"
+    Write-Output "ReportsJarSha256=$($reportsArtifactHash.Hash)"
+    Write-Output "ReportsFunctionZip=$($reportsZipArtifact.FullName)"
+    Write-Output "ReportsFunctionZipBytes=$($reportsZipArtifact.Length)"
+    Write-Output "ReportsFunctionZipSha256=$($reportsZipArtifactHash.Hash)"
 }
 finally {
     Pop-Location

@@ -1,4 +1,4 @@
 /**
- * Módulo reservado para a função de relatórios de sprints futuras.
+ * Lambda responsável pela geração do relatório semanal do FeedFlow.
  */
 package br.com.feedflow.reports;

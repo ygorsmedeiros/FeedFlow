@@ -1,14 +1,16 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('DEPLOY')]
+    [ValidateSet('PREVIEW', 'DEPLOY')]
     [string]$Authorization,
 
     [string]$StackName = 'feedflow-dev',
     [string]$Profile = 'feedflow',
     [string]$Region = 'us-east-2',
     [string]$TableName = 'FeedFlowFeedback',
-    [string]$JavaHome = 'E:\Program Files\Java\jdk-17'
+    [string]$JavaHome = 'E:\Program Files\Java\jdk-17',
+    [switch]$PreviewOnly,
+    [switch]$ChangeSetPreviewApproved
 )
 
 $ErrorActionPreference = 'Stop'
@@ -49,8 +51,16 @@ function Invoke-RequiredScript {
     }
 }
 
-if ($Authorization -ne 'DEPLOY') {
+if ($PreviewOnly -and $Authorization -ne 'PREVIEW') {
+    throw 'O preview exige -Authorization PREVIEW.'
+}
+
+if (-not $PreviewOnly -and $Authorization -ne 'DEPLOY') {
     throw 'O deploy exige -Authorization DEPLOY.'
+}
+
+if (-not $PreviewOnly -and -not $ChangeSetPreviewApproved) {
+    throw 'O deploy exige -ChangeSetPreviewApproved após a revisão humana do preview.'
 }
 
 $samCli = Resolve-SamCli
@@ -78,9 +88,16 @@ try {
     }
     $notificationsFunctionZipHash = `
         (Get-FileHash -Algorithm SHA256 -LiteralPath $notificationsFunctionZip).Hash
+    $reportsFunctionZip = Join-Path $repositoryRoot 'feedflow-reports\target\function.zip'
+    if (-not (Test-Path -LiteralPath $reportsFunctionZip)) {
+        throw 'O function.zip de relatórios validado não foi encontrado. O deploy foi interrompido.'
+    }
+    $reportsFunctionZipHash = `
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $reportsFunctionZip).Hash
 
     Write-Host ''
-    Write-Host 'Parâmetros do deploy aguardando confirmação:'
+    $operationName = if ($PreviewOnly) { 'preview do change set' } else { 'deploy' }
+    Write-Host "Parâmetros do $operationName aguardando confirmação:"
     Write-Host "Stack: $StackName"
     Write-Host "Perfil: $Profile"
     Write-Host "Região: $Region"
@@ -89,28 +106,55 @@ try {
     Write-Host "SHA-256 API: $functionZipHash"
     Write-Host "Artefato notificações: $notificationsFunctionZip"
     Write-Host "SHA-256 notificações: $notificationsFunctionZipHash"
+    Write-Host "Artefato relatórios: $reportsFunctionZip"
+    Write-Host "SHA-256 relatórios: $reportsFunctionZipHash"
     Write-Host ''
 
-    Write-Host 'O SAM criará um change set, exibirá as mudanças e pedirá nova confirmação antes de executá-las.'
-    $global:LASTEXITCODE = 0
-    & $samCli deploy `
-        --template-file template.yaml `
-        --stack-name $StackName `
-        --profile $Profile `
-        --region $Region `
-        --capabilities CAPABILITY_IAM `
-        --resolve-s3 `
-        --confirm-changeset `
-        --no-fail-on-empty-changeset `
-        --parameter-overrides `
-            EnvironmentName=dev `
-            FeedbackTableName=$TableName `
-            LogRetentionDays=14
+    $samArguments = @(
+        'deploy'
+        '--template-file'
+        'template.yaml'
+        '--stack-name'
+        $StackName
+        '--profile'
+        $Profile
+        '--region'
+        $Region
+        '--capabilities'
+        'CAPABILITY_NAMED_IAM'
+        '--resolve-s3'
+    )
 
-    $samDeploySucceeded = $?
-    $samDeployExitCode = $LASTEXITCODE
-    if (-not $samDeploySucceeded -or $samDeployExitCode -ne 0) {
-        throw "O deploy SAM não foi concluído. Exit code: $samDeployExitCode."
+    if ($PreviewOnly) {
+        Write-Host 'Modo preview: o SAM criará o change set e encerrará sem executá-lo.'
+        $samArguments += '--no-execute-changeset'
+    }
+    else {
+        Write-Host 'O SAM criará um change set, exibirá as mudanças e pedirá nova confirmação antes de executá-las.'
+        $samArguments += '--confirm-changeset'
+    }
+
+    $samArguments += @(
+        '--no-fail-on-empty-changeset'
+        '--parameter-overrides'
+        'EnvironmentName=dev'
+        "FeedbackTableName=$TableName"
+        'LogRetentionDays=14'
+        'RuntimeRoleHardeningEnabled=false'
+        'DynamoDbSafetyControlsEnabled=false'
+    )
+
+    $global:LASTEXITCODE = 0
+    & $samCli @samArguments
+
+    $samOperationSucceeded = $?
+    $samOperationExitCode = $LASTEXITCODE
+    if (-not $samOperationSucceeded -or $samOperationExitCode -ne 0) {
+        throw "A operação SAM '$operationName' não foi concluída. Exit code: $samOperationExitCode."
+    }
+
+    if ($PreviewOnly) {
+        Write-Host 'Preview concluído. O change set foi criado, mas não foi executado.'
     }
 }
 finally {

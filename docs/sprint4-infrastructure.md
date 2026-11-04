@@ -101,10 +101,11 @@ Pré-requisitos humanos:
 Com a autorização, o operador executará manualmente:
 
 ```powershell
-.\scripts\deploy-aws.ps1 -Authorization DEPLOY
+.\scripts\deploy-aws.ps1 -Authorization PREVIEW -PreviewOnly
+.\scripts\deploy-aws.ps1 -Authorization DEPLOY -ChangeSetPreviewApproved
 ```
 
-O script recompila, testa e valida antes de chamar `sam deploy` com perfil `feedflow`, região `us-east-2` (Ohio), stack `feedflow-dev`, `CAPABILITY_IAM` e `--confirm-changeset`. O SAM cria e exibe o change set e pede outra confirmação antes de executá-lo. `--resolve-s3` pode criar o bucket/stack de artefatos gerenciado pelo SAM na primeira utilização.
+O script recompila, testa e valida antes de chamar `sam deploy` com perfil `feedflow`, região `us-east-2` (Ohio), stack `feedflow-dev` e `CAPABILITY_NAMED_IAM`. O primeiro comando usa `--no-execute-changeset`; o segundo exige a declaração da revisão e preserva `--confirm-changeset`. `--resolve-s3` reutiliza o bucket gerenciado pelo SAM e pode criar essa infraestrutura auxiliar somente se ela ainda não existir.
 
 Para consultar outputs e recursos após um deploy autorizado:
 

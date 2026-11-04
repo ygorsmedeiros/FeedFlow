@@ -23,6 +23,7 @@ $template = Join-Path $repositoryRoot 'template.yaml'
 $functionZip = Join-Path $repositoryRoot 'feedflow-api\target\function.zip'
 $notificationsFunctionZip = Join-Path $repositoryRoot `
     'feedflow-notifications\target\function.zip'
+$reportsFunctionZip = Join-Path $repositoryRoot 'feedflow-reports\target\function.zip'
 
 if (-not (Test-Path -LiteralPath $template)) {
     throw 'template.yaml não foi encontrado na raiz do repositório.'
@@ -39,6 +40,12 @@ if (-not (Test-Path -LiteralPath $notificationsFunctionZip)) {
 if ((Get-Item -LiteralPath $notificationsFunctionZip).Length -le 0) {
     throw 'O function.zip de notificações está vazio.'
 }
+if (-not (Test-Path -LiteralPath $reportsFunctionZip)) {
+    throw 'O function.zip de relatórios não existe. Execute scripts/build-and-test.ps1 antes da validação SAM.'
+}
+if ((Get-Item -LiteralPath $reportsFunctionZip).Length -le 0) {
+    throw 'O function.zip de relatórios está vazio.'
+}
 
 $templateContent = Get-Content -Raw -LiteralPath $template
 if ($templateContent -notmatch '(?m)^\s+CodeUri:\s+feedflow-api/target/function\.zip\s*$') {
@@ -47,10 +54,15 @@ if ($templateContent -notmatch '(?m)^\s+CodeUri:\s+feedflow-api/target/function\
 if ($templateContent -notmatch '(?m)^\s+CodeUri:\s+feedflow-notifications/target/function\.zip\s*$') {
     throw 'O template SAM não referencia o function.zip de notificações gerado pelo Maven.'
 }
+if ($templateContent -notmatch '(?m)^\s+CodeUri:\s+feedflow-reports/target/function\.zip\s*$') {
+    throw 'O template SAM não referencia o function.zip de relatórios gerado pelo Maven.'
+}
 
 $functionZipHashBeforeBuild = (Get-FileHash -Algorithm SHA256 -LiteralPath $functionZip).Hash
 $notificationsFunctionZipHashBeforeBuild = `
     (Get-FileHash -Algorithm SHA256 -LiteralPath $notificationsFunctionZip).Hash
+$reportsFunctionZipHashBeforeBuild = `
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $reportsFunctionZip).Hash
 
 Push-Location $repositoryRoot
 try {
@@ -98,8 +110,15 @@ try {
         throw 'O function.zip de notificações foi alterado durante a validação SAM.'
     }
 
+    $reportsFunctionZipHashAfterBuild = `
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $reportsFunctionZip).Hash
+    if ($reportsFunctionZipHashBeforeBuild -ne $reportsFunctionZipHashAfterBuild) {
+        throw 'O function.zip de relatórios foi alterado durante a validação SAM.'
+    }
+
     Write-Output "SamFunctionZipSha256=$functionZipHashAfterBuild"
     Write-Output "SamNotificationsFunctionZipSha256=$notificationsFunctionZipHashAfterBuild"
+    Write-Output "SamReportsFunctionZipSha256=$reportsFunctionZipHashAfterBuild"
 }
 finally {
     Pop-Location

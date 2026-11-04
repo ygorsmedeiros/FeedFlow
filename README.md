@@ -1,6 +1,6 @@
 ﻿# FeedFlow
 
-FeedFlow é o projeto da Fase 4 do FIAP Tech Challenge. Esta versão contém a fundação técnica, a API e persistência de avaliações, a infraestrutura AWS SAM e a Lambda de notificações críticas implementadas nas Sprints 1–5. O módulo de relatórios permanece reservado para a Sprint 6.
+FeedFlow é o projeto da Fase 4 do FIAP Tech Challenge. Esta versão contém a fundação técnica, a API e persistência de avaliações, a infraestrutura AWS SAM, as Lambdas de notificações e relatórios e a integração contínua implementadas nas Sprints 1–7.
 
 ## Escopo implementado
 
@@ -13,12 +13,14 @@ FeedFlow é o projeto da Fase 4 do FIAP Tech Challenge. Esta versão contém a f
 - empacotamento JVM da API para AWS Lambda;
 - Lambda Java 17 que consome `INSERT` do DynamoDB Streams e publica somente avaliações `CRITICA` no SNS;
 - resposta parcial por lote, retries limitados e destino SQS para falhas esgotadas;
-- template AWS SAM com HTTP API v2, duas Lambdas Java 17, DynamoDB, SNS, SQS, log groups e IAM mínimo;
+- Lambda Java 17 que consulta a semana anterior, agrega métricas e publica um relatório completo em tópico SNS exclusivo;
+- EventBridge Scheduler às segundas-feiras, 09:00 em `America/Sao_Paulo`, com retries e destino SQS;
+- template AWS SAM com HTTP API v2, três Lambdas Java 17, DynamoDB, SNS, SQS, Scheduler, log groups e IAM mínimo;
 - scripts PowerShell de build, validação, deploy manual, consulta e remoção da stack;
 - testes automatizados unitários, HTTP e de integração real com DynamoDB Local;
-- módulo Java 17 de relatórios, ainda sem lógica de negócio.
+- validação explícita do limite SNS de 256 KiB em UTF-8 antes da publicação do relatório.
 
-Não fazem parte desta sprint: relatórios, frontend, autenticação ou deploy executado na AWS. A infraestrutura foi somente preparada e validada localmente; nenhum recurso AWS foi criado. Nenhuma assinatura SNS de e-mail é criada automaticamente. Uma avaliação válida retorna HTTP 201 somente depois que o DynamoDB confirma a gravação.
+Não fazem parte deste escopo: frontend, autenticação da API ou deploy automático. A stack `feedflow-dev` existe em `us-east-2`; alterações futuras permanecem sujeitas a preview e aprovação humana. Nenhuma assinatura SNS de e-mail é criada automaticamente. Uma avaliação válida retorna HTTP 201 somente depois que o DynamoDB confirma a gravação.
 
 ## Estrutura
 
@@ -32,10 +34,14 @@ FeedFlow/
 ├── compose.yaml
 ├── docker/dynamodb/create-table.json
 ├── docs/sprint4-infrastructure.md
+├── docs/sprint7-cd-manual.md
+├── infrastructure/oidc/github-actions-oidc.yaml
 ├── scripts/
 │   ├── build-and-test.ps1
 │   ├── validate-sam.ps1
 │   ├── deploy-aws.ps1
+│   ├── preview-oidc-change-set.ps1
+│   ├── validate-aws-deployment.ps1
 │   ├── show-aws-stack.ps1
 │   ├── remove-aws-stack.ps1
 │   ├── initialize-dynamodb-local.ps1
@@ -55,7 +61,10 @@ FeedFlow/
 │       └── test/java/br/com/feedflow/notifications/{handler,publishing}/
 └── feedflow-reports/
     ├── pom.xml
-    └── src/main/java/br/com/feedflow/reports/
+    └── src/
+        ├── assembly/lambda.xml
+        ├── main/java/br/com/feedflow/reports/{aggregation,application,domain,formatting,handler,period,publishing,repository}/
+        └── test/java/br/com/feedflow/reports/
 ```
 
 ## Tecnologias e versões
@@ -293,20 +302,25 @@ O handler JVM da integração é `io.quarkus.amazon.lambda.runtime.QuarkusStream
 
 A Lambda de notificações gera o JAR sombreado `feedflow-notifications/target/feedflow-notifications-1.0.0-SNAPSHOT.jar` e o pacote de implantação `feedflow-notifications/target/function.zip`. O ZIP segue o layout Java do Lambda, com o JAR em `lib/`, e é o artefato referenciado pelo SAM. O handler é `br.com.feedflow.notifications.handler.CriticalNotificationHandler::handleRequest`; o pacote contém a aplicação, AWS Lambda Java Events, AWS SDK v2 para SNS e o cliente HTTP necessários em runtime.
 
+A Lambda de relatórios gera `feedflow-reports/target/function.zip`, também com JAR sombreado em `lib/`. O handler é `br.com.feedflow.reports.handler.WeeklyReportHandler::handleRequest`; o pacote inclui AWS SDK v2 para DynamoDB e SNS. As variáveis `FEEDFLOW_DYNAMODB_TABLE_NAME` e `FEEDFLOW_REPORT_TOPIC_ARN` são preenchidas pelo SAM.
+
 O pacote é compilado como bytecode Java 17. O template auxiliar `sam.jvm.yaml` embutido no Quarkus 3.33 usa `Runtime: java21` por padrão; ele não é a infraestrutura aprovada do FeedFlow. O `template.yaml` versionado declara explicitamente `Runtime: java17` e usa o mesmo `function.zip`.
 
 ## Infraestrutura AWS SAM
 
-O template cria, quando executado futuramente por um operador autorizado:
+O template gerencia na stack `feedflow-dev`:
 
 - API Gateway HTTP API v2 no stage `$default`;
 - Lambda API Java 17, `x86_64`, 512 MB e timeout de 15 segundos;
 - Lambda de notificações Java 17, `x86_64`, 256 MB e timeout de 20 segundos;
+- Lambda de relatórios Java 17, `x86_64`, 512 MB e timeout de 60 segundos;
 - tabela `FeedFlowFeedback` on-demand, GSI `byWeek` e Streams `NEW_IMAGE`;
 - tópico SNS `feedflow-dev-critical-alerts`, sem assinatura criada automaticamente;
+- tópico SNS separado `feedflow-dev-weekly-reports`, também sem assinatura automática;
 - fila SQS criptografada `feedflow-dev-notifications-failures`, com retenção de 14 dias para falhas esgotadas;
 - Event Source Mapping com lotes de até 10, resposta parcial, três retries e idade máxima de uma hora;
-- execution roles separadas para API e notificações, com permissões restritas aos recursos necessários;
+- EventBridge Scheduler semanal, segunda-feira às 09:00 no fuso `America/Sao_Paulo`;
+- execution roles separadas para API, notificações, relatórios e Scheduler, com permissões restritas aos recursos necessários;
 - CloudWatch Log Groups separados, com retenção de 14 dias.
 
 O API Gateway expõe somente `GET /health` e `POST /avaliacao`. Não existe rota proxy ou output Unicode. CORS não foi habilitado porque não existe frontend nesta sprint.
@@ -321,6 +335,14 @@ A entrega é **at least once**. O Event Source Mapping pode reenviar registros a
 
 O tópico não possui assinatura no template. Depois do deploy autorizado, o Tech Lead deverá fornecer um endereço real, criar e confirmar a assinatura de e-mail e executar o teste ponta a ponta. Uma assinatura pendente não recebe notificações.
 
+## Lambda de relatório semanal
+
+O fluxo previsto é `EventBridge Scheduler → Lambda de relatórios → DynamoDB byWeek → SNS Weekly Reports`. O Scheduler envia `{"source":"feedflow.scheduler.weekly-report"}`; como o payload não inventa um campo dinâmico `time`, o handler usa o relógio da invocação e calcula a semana anterior completa em `America/Sao_Paulo`.
+
+O Scheduler possui retry de entrega por até uma hora e uma fila SQS de falhas. Como a chamada da Lambda é assíncrona, existe também uma configuração independente de dois retries da execução Lambda, idade máxima de uma hora e destino para a mesma fila. A entrega é **at least once**: uma falha após o SNS aceitar a mensagem pode gerar relatório duplicado no retry.
+
+Antes de publicar, o relatório é medido em UTF-8. Mensagens maiores que 262.144 bytes falham explicitamente e não são truncadas. Uma evolução possível é armazenar o relatório completo no S3 e publicar somente um resumo/link, mas nenhum bucket adicional foi introduzido nesta sprint. Consulte [as decisões da Sprint 6](docs/sprint6-reports.md).
+
 Build e validação local:
 
 ```powershell
@@ -334,14 +356,20 @@ Testes com DynamoDB Local:
 .\scripts\build-and-test.ps1 -IncludeDynamoDbLocalTests
 ```
 
-Deploy futuro, somente depois da revisão e autorização explícita do Tech Lead:
+Preview obrigatório, sem execução do change set:
 
 ```powershell
-.\scripts\deploy-aws.ps1 -Authorization DEPLOY
+.\scripts\deploy-aws.ps1 -Authorization PREVIEW -PreviewOnly
 ```
 
-O script usa o perfil `feedflow`, a região `us-east-2` (Ohio) e a stack `feedflow-dev`, exibe o change set e pede confirmação antes de executá-lo. Ele não foi executado nesta sprint. Consulte [a documentação da infraestrutura](docs/sprint4-infrastructure.md) e [as decisões da Lambda de notificações](docs/sprint5-notifications.md).
+Após revisão e aprovação humana do preview:
+
+```powershell
+.\scripts\deploy-aws.ps1 -Authorization DEPLOY -ChangeSetPreviewApproved
+```
+
+O script usa o perfil `feedflow`, a região `us-east-2` (Ohio) e a stack `feedflow-dev`. O deploy normal preserva `--confirm-changeset`; o modo preview usa `--no-execute-changeset`. Consulte [o processo de CI/CD da Sprint 7](docs/sprint7-cd-manual.md), [a preparação OIDC](docs/sprint7-oidc.md), [a documentação da infraestrutura](docs/sprint4-infrastructure.md) e [as decisões da Lambda de notificações](docs/sprint5-notifications.md).
 
 ## Próximos passos
 
-O Tech Lead deverá revisar o IAM da Lambda de notificações, os limites de retry/idade, a fila de falhas, a ausência deliberada de deduplicação durável e a estratégia para criar uma assinatura SNS com endereço real. O deploy e os testes ponta a ponta no API Gateway/Lambda/DynamoDB/SNS reais permanecem pendentes de autorização explícita. O Compose e as credenciais fictícias existem exclusivamente para desenvolvimento local.
+O Tech Lead deverá revisar o IAM das Lambdas, os limites de retry/idade, as filas de falhas, a ausência deliberada de deduplicação durável, o limite de 256 KiB do relatório e a estratégia para criar assinaturas SNS com endereços reais. O deploy e os testes ponta a ponta no API Gateway/Lambda/DynamoDB/SNS/Scheduler reais permanecem pendentes de autorização explícita. O Compose e as credenciais fictícias existem exclusivamente para desenvolvimento local.
