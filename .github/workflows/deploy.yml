@@ -1,0 +1,107 @@
+name: Deploy (AWS SAM)
+
+# Deploy automatizado das funcoes serverless e da infraestrutura.
+# Executa apos push em main (testes rodam antes) ou manualmente.
+# Autenticacao por OIDC: nenhuma chave AWS de longa duracao no repositorio.
+#
+# Variaveis do Environment "feedflow-dev" (Settings > Environments):
+#   AWS_DEPLOY_ROLE_ARN   ARN da role feedflow-github-actions-deploy
+#   SAM_ARTIFACT_BUCKET   bucket S3 aprovado para os artefatos
+#   ADMIN_EMAIL           e-mail do administrador (alertas, relatorio, alarmes)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-feedflow-dev
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-2
+  STACK_NAME: feedflow-dev
+
+jobs:
+  test:
+    name: Testes (Java 17)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Build e testes
+        run: bash ./mvnw --batch-mode --no-transfer-progress clean verify
+      - name: Publicar pacotes das funcoes
+        uses: actions/upload-artifact@v4
+        with:
+          name: function-packages
+          retention-days: 1
+          path: |
+            feedflow-api/target/function.zip
+            feedflow-notifications/target/function.zip
+            feedflow-reports/target/function.zip
+
+  deploy:
+    name: Deploy SAM
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: feedflow-dev
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: function-packages
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+      - name: Credenciais AWS temporarias (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Validar template
+        run: sam validate --lint --template-file template.yaml
+      - name: Deploy
+        run: >-
+          sam deploy
+          --template-file template.yaml
+          --stack-name "$STACK_NAME"
+          --region "$AWS_REGION"
+          --capabilities CAPABILITY_NAMED_IAM
+          --s3-bucket "${{ vars.SAM_ARTIFACT_BUCKET }}"
+          --s3-prefix feedflow-dev
+          --no-confirm-changeset
+          --no-fail-on-empty-changeset
+          --parameter-overrides
+          EnvironmentName=dev
+          FeedbackTableName=FeedFlowFeedback
+          LogRetentionDays=14
+          RuntimeRoleHardeningEnabled=false
+          DynamoDbSafetyControlsEnabled=false
+          "AdminEmail=${{ vars.ADMIN_EMAIL }}"
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          URL=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text)
+          curl --fail --silent --show-error "$URL/health" | tee /dev/stderr | grep -q '"status":"UP"'
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL/avaliacao" \
+            -H 'Content-Type: application/json' -d '{"nota":11}')
+          test "$CODE" = "400"

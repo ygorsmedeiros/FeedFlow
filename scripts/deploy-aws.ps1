@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet('PREVIEW', 'DEPLOY')]
@@ -8,6 +8,7 @@ param(
     [string]$Profile = 'feedflow',
     [string]$Region = 'us-east-2',
     [string]$TableName = 'FeedFlowFeedback',
+    [string]$AdminEmail = '',
     [string]$JavaHome = 'E:\Program Files\Java\jdk-17',
     [switch]$PreviewOnly,
     [switch]$ChangeSetPreviewApproved
@@ -142,6 +143,7 @@ try {
         'LogRetentionDays=14'
         'RuntimeRoleHardeningEnabled=false'
         'DynamoDbSafetyControlsEnabled=false'
+        "AdminEmail=$AdminEmail"
     )
 
     $global:LASTEXITCODE = 0

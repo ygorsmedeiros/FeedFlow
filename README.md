@@ -1,6 +1,91 @@
-﻿# FeedFlow
+# FeedFlow
 
 FeedFlow é o projeto da Fase 4 do FIAP Tech Challenge. Esta versão contém a fundação técnica, a API e persistência de avaliações, a infraestrutura AWS SAM, as Lambdas de notificações e relatórios e a integração contínua implementadas nas Sprints 1–7.
+
+## Arquitetura da solução
+
+### Modelo de cloud escolhido
+
+**AWS, 100% serverless (FaaS + serviços gerenciados), região `us-east-2`.** Não há servidor para
+provisionar, aplicar patch ou escalar: o custo é por uso (importante com créditos limitados) e o
+desacoplamento por eventos garante a responsabilidade única de cada função.
+
+```mermaid
+flowchart LR
+    A[Estudante] -->|POST /avaliacao| G[API Gateway HTTP API]
+    G --> L1[Lambda API<br/>feedflow-api]
+    L1 --> D[(DynamoDB<br/>FeedFlowFeedback + GSI byWeek)]
+    D -- Streams INSERT --> L2[Lambda Notificações<br/>feedflow-notifications]
+    L2 -- somente CRITICA --> S1[SNS critical-alerts] --> E1[E-mail do admin]
+    L2 -. falha esgotada .-> Q1[SQS falhas]
+    EB[EventBridge Scheduler<br/>seg 09:00 America/Sao_Paulo] --> L3[Lambda Relatórios<br/>feedflow-reports]
+    L3 -- Query byWeek --> D
+    L3 --> S2[SNS weekly-reports] --> E1
+    L3 -. falha .-> Q2[SQS falhas]
+    L1 & L2 & L3 --> CW[CloudWatch Logs, métricas,<br/>alarmes e dashboard]
+    CW --> S3[SNS ops-alarms] --> E1
+```
+
+### Componentes e responsabilidades
+
+| Componente | Responsabilidade única | Por que foi escolhido |
+|---|---|---|
+| API Gateway HTTP API v2 | Expor `GET /health` e `POST /avaliacao` via HTTPS, com throttling (10 req/s, burst 20) | Mais barato e simples que REST API; só duas rotas |
+| Lambda `feedflow-api` | Validar, classificar e gravar a avaliação | Sem estado; escala a zero |
+| DynamoDB | Armazenar avaliações; GSI `byWeek` evita `Scan` no relatório | On-demand, sem servidor, Streams nativos |
+| Lambda `feedflow-notifications` | Reagir a novas avaliações **críticas** e publicar o alerta | Acionada por evento, sem polling |
+| SNS | Entregar e-mails (alertas, relatório, alarmes) | Assinatura de e-mail gerenciada |
+| Lambda `feedflow-reports` | Agregar a semana anterior e publicar o relatório | Execução agendada, independente da API |
+| EventBridge Scheduler | Disparar o relatório toda segunda, 09:00 | Suporta fuso horário e retry |
+| SQS (filas de falhas) | Reter eventos que esgotaram os retries | Nada se perde em silêncio |
+| CloudWatch | Logs, métricas, alarmes e dashboard | Nativo, sem agente |
+
+### Documentação das funções
+
+| Função | Gatilho | Entrada | Saída/efeito | Handler |
+|---|---|---|---|---|
+| `feedflow-api` | API Gateway | `{"descricao": string, "nota": 0..10}` | `201` com id/urgência; `400` entrada inválida; `500` falha de persistência | `QuarkusStreamHandler::handleRequest` |
+| `feedflow-notifications` | DynamoDB Streams (`INSERT`) | Registro do stream | E-mail com **descrição, urgência e data de envio** (mais id, nota e data de geração do alerta), somente `CRITICA` | `CriticalNotificationHandler::handleRequest` |
+| `feedflow-reports` | EventBridge Scheduler | `{"source":"feedflow.scheduler.weekly-report"}` | E-mail com **média, descrição, urgência e data de cada avaliação, quantidade por dia e por urgência** | `WeeklyReportHandler::handleRequest` |
+
+Regra de urgência: nota 0–3 `CRITICA`, 4–6 `MEDIA`, 7–10 `BAIXA`. O PDF do desafio escreve
+`POST /avaliação`; a rota implementada é `POST /avaliacao` (sem acento, por segurança em URLs).
+
+### Segurança e governança de acesso
+
+- IAM de menor privilégio: uma execution role por função, sem `Scan` e restrita aos ARNs exatos.
+- Permissions boundaries e deploy por OIDC (sem access keys no GitHub): ver [docs/sprint7-oidc.md](docs/sprint7-oidc.md).
+- DynamoDB com criptografia em repouso; SQS com SSE; tráfego somente HTTPS.
+- Logs não registram o conteúdo das avaliações; destinatários vêm de parâmetro, nunca do código.
+- API pública por design (estudantes anônimos), protegida por throttling e validação estrita. Autenticação de estudantes está fora do escopo do desafio.
+
+### Monitoramento
+
+Recursos criados pelo `template.yaml`:
+
+- **Dashboard** `feedflow-dev-overview`: invocações, erros e duração p95 por Lambda, requisições/4xx/5xx da API, filas de falhas e últimos erros da API.
+- **Alarmes** (ação: SNS `feedflow-dev-ops-alarms` → e-mail): erros em cada uma das três Lambdas, duração p95 da API > 12 s, 5xx na HTTP API e mensagens nas duas filas de falhas.
+- **Logs** com retenção de 14 dias, um log group por função.
+
+Para ver: CloudWatch → Dashboards → `feedflow-dev-overview`; CloudWatch → Alarms.
+
+### Instruções de deploy
+
+**Automático (recomendado):** push em `main` executa `.github/workflows/deploy.yml`
+(testes → `sam deploy` por OIDC → smoke test). Configure no GitHub Environment `feedflow-dev`
+as variáveis `AWS_DEPLOY_ROLE_ARN`, `SAM_ARTIFACT_BUCKET` e `ADMIN_EMAIL`. O bootstrap da role
+OIDC está em [docs/sprint7-oidc.md](docs/sprint7-oidc.md) (reaplicar a stack bootstrap, pois ela ganhou
+permissões de CloudWatch e SNS).
+
+**Manual:**
+
+```powershell
+.\scripts\deploy-aws.ps1 -Authorization PREVIEW -PreviewOnly -AdminEmail admin@exemplo.com
+.\scripts\deploy-aws.ps1 -Authorization DEPLOY -ChangeSetPreviewApproved -AdminEmail admin@exemplo.com
+```
+
+Depois do deploy, **confirme os três e-mails de assinatura** que a AWS enviar ao administrador.
+Teste ponta a ponta: veja o [roteiro de demonstração](docs/demo-script.md).
 
 ## Escopo implementado
 
@@ -15,7 +100,8 @@ FeedFlow é o projeto da Fase 4 do FIAP Tech Challenge. Esta versão contém a f
 - resposta parcial por lote, retries limitados e destino SQS para falhas esgotadas;
 - Lambda Java 17 que consulta a semana anterior, agrega métricas e publica um relatório completo em tópico SNS exclusivo;
 - EventBridge Scheduler às segundas-feiras, 09:00 em `America/Sao_Paulo`, com retries e destino SQS;
-- template AWS SAM com HTTP API v2, três Lambdas Java 17, DynamoDB, SNS, SQS, Scheduler, log groups e IAM mínimo;
+- template AWS SAM com HTTP API v2, três Lambdas Java 17, DynamoDB, SNS, SQS, Scheduler, log groups, IAM mínimo, alarmes CloudWatch e dashboard;
+- deploy automatizado por GitHub Actions + OIDC (`.github/workflows/deploy.yml`);
 - scripts PowerShell de build, validação, deploy manual, consulta e remoção da stack;
 - testes automatizados unitários, HTTP e de integração real com DynamoDB Local;
 - validação explícita do limite SNS de 256 KiB em UTF-8 antes da publicação do relatório.

@@ -389,9 +389,31 @@ Resources:
               - sns:SetTopicAttributes
               - sns:TagResource
               - sns:UntagResource
+              - sns:Subscribe
+              - sns:Unsubscribe
             Resource:
               - !Sub 'arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ApplicationStackName}-critical-alerts'
               - !Sub 'arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ApplicationStackName}-weekly-reports'
+              - !Sub 'arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ApplicationStackName}-ops-alarms'
+
+          - Sid: ManageFeedFlowMonitoring
+            Effect: Allow
+            Action:
+              - cloudwatch:PutMetricAlarm
+              - cloudwatch:DeleteAlarms
+              - cloudwatch:DescribeAlarms
+              - cloudwatch:ListTagsForResource
+              - cloudwatch:TagResource
+              - cloudwatch:UntagResource
+            Resource: !Sub 'arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${ApplicationStackName}-*'
+
+          - Sid: ManageFeedFlowDashboard
+            Effect: Allow
+            Action:
+              - cloudwatch:PutDashboard
+              - cloudwatch:DeleteDashboards
+              - cloudwatch:GetDashboard
+            Resource: !Sub 'arn:${AWS::Partition}:cloudwatch::${AWS::AccountId}:dashboard/${ApplicationStackName}-overview'
 
           - Sid: ManageFeedFlowQueues
             Effect: Allow
