@@ -22,8 +22,8 @@ flowchart LR
     L3 -- Query byWeek --> D
     L3 --> S2[SNS weekly-reports] --> E1
     L3 -. falha .-> Q2[SQS falhas]
-    L1 & L2 & L3 --> CW[CloudWatch Logs, métricas,<br/>alarmes e dashboard]
-    CW --> S3[SNS ops-alarms] --> E1
+    L1 & L2 & L3 --> CW[CloudWatch Logs e métricas]
+    CW -. monitoramento previsto .-> S3[Alarmes, dashboard e SNS operacional]
 ```
 
 ### Componentes e responsabilidades
@@ -51,23 +51,22 @@ flowchart LR
 Regra de urgência: nota 0–3 `CRITICA`, 4–6 `MEDIA`, 7–10 `BAIXA`. O PDF do desafio escreve
 `POST /avaliação`; a rota implementada é `POST /avaliacao` (sem acento, por segurança em URLs).
 
-### Segurança e governança de acesso
+### Controles verificados na AWS
 
-- IAM de menor privilégio: uma execution role por função, sem `Scan` e restrita aos ARNs exatos.
-- Permissions boundaries e deploy por OIDC (sem access keys no GitHub): ver [docs/sprint7-oidc.md](docs/sprint7-oidc.md).
-- DynamoDB com criptografia em repouso; SQS com SSE; tráfego somente HTTPS.
-- Logs não registram o conteúdo das avaliações; destinatários vêm de parâmetro, nunca do código.
-- API pública por design (estudantes anônimos), protegida por throttling e validação estrita. Autenticação de estudantes está fora do escopo do desafio.
+- O Stream da tabela usa `NEW_IMAGE`. O mapeamento de notificações estava habilitado, com resposta parcial, divisão de lote em falha, 3 retentativas e destino SQS para falhas.
+- O Scheduler do relatório estava habilitado para segundas-feiras às 09:00 em `America/Sao_Paulo`, com 2 retentativas, idade máxima de 1 hora e fila de falhas SQS.
+- A HTTP API pública usa throttling de 10 requisições por segundo e burst de 20. As duas filas de falhas têm criptografia gerenciada pelo SQS e retenção de 14 dias.
+- O PITR estava desabilitado na tabela da conta de avaliação.
 
-### Monitoramento
+O template principal descreve as permissões dos serviços. A configuração OIDC e os recursos de monitoramento previstos fazem parte da entrega em código.
 
-Recursos criados pelo `template.yaml`:
+### Monitoramento previsto
 
-- **Dashboard previsto** `feedflow-dev-monitoring-overview`: invocações, erros e duração p95 por Lambda, requisições/4xx/5xx da API e filas de falhas.
-- **Alarmes** (ação: SNS `feedflow-dev-monitoring-ops-alarms` → e-mail): erros em cada uma das três Lambdas, duração p95 da API > 12 s, 5xx na HTTP API e mensagens nas duas filas de falhas.
-- **Logs** com retenção de 14 dias, um log group por função.
+A stack `feedflow-dev-monitoring` usa `monitoring.yaml` para definir um dashboard, sete alarmes e um tópico operacional:
 
-Após implantar o monitoramento, abra CloudWatch → Dashboards → `feedflow-dev-monitoring-overview` e CloudWatch → Alarms.
+- Dashboard `feedflow-dev-monitoring-overview`: invocações, erros e duração p95 das Lambdas, requisições e erros da HTTP API e filas de falhas.
+- Alarmes: erro nas três Lambdas, duração p95 da API acima de 12 s, 5xx da HTTP API e mensagens nas duas filas de falhas.
+- Tópico SNS `feedflow-dev-monitoring-ops-alarms` como destino dos alarmes.
 
 ### Deploy direto
 
@@ -87,9 +86,24 @@ Com as permissões aprovadas, execute o script sem `--dry-run`. O script usa os 
 
 ## Limitações da conta AWS
 
-Na avaliação de 16/11/2026 em `us-east-2`, `iam:ListOpenIDConnectProviders` e `iam:GetOpenIDConnectProvider` retornaram `AccessDenied` por SCP. A simulação da role de sessão indicou `explicitDeny` da organização para `cloudformation:CreateStack` e `cloudformation:UpdateStack` sobre `feedflow-dev-monitoring`, além de `lambda:UpdateFunctionCode`. O deploy direto ficou bloqueado. A sintaxe do script passou no Git Bash, o template principal passou em `sam validate --lint` e o template de monitoramento foi aceito por `cloudformation validate-template`.
+A demonstração de 16/11/2026 usa a implantação existente na stack `feedflow-dev`, em `us-east-2`. O deploy direto da revisão de avaliação ficou bloqueado. Os hashes das três funções implantadas diferiram dos hashes dos ZIPs locais. Não foi possível associar o código implantado a um commit exato.
 
-Na stack ativa `feedflow-dev`, os testes HTTP retornaram 200, 201, 201 e 400. As duas avaliações válidas foram lidas na tabela com urgências `CRITICA` e `BAIXA`, e o PITR estava desabilitado. Os logs das Lambdas registraram publicação do alerta crítico e do relatório da semana de 09 a 15/11/2026, com zero avaliações nesse período.
+A AWS retornou `AccessDenied` por SCP nas chamadas reais `iam:ListOpenIDConnectProviders` e `iam:GetOpenIDConnectProvider`. Para `cloudformation:CreateStack`, `cloudformation:UpdateStack` e `lambda:UpdateFunctionCode`, a evidência é a simulação IAM com `explicitDeny` e `AllowedByOrganizations=false`. Essas três operações de escrita não foram chamadas. A consulta à organização confirmou que o perfil está em uma conta membro. A leitura da política e de seus alvos foi negada. Não foi possível identificar o administrador com este perfil.
+
+### Validação da entrega
+
+| Item | Evidência verificada |
+| --- | --- |
+| `template.yaml` | `sam validate --template-file template.yaml --profile feedflow --region us-east-2 --lint` |
+| `monitoring.yaml` | `aws cloudformation validate-template --template-body file://monitoring.yaml --profile feedflow --region us-east-2` |
+| `scripts/deploy-direct.sh` | `bash -n scripts/deploy-direct.sh` e dry-run com os outputs de `feedflow-dev` e os três ZIPs. |
+| `.github/workflows/deploy.yml` | Arquivo remoto conferido com a cópia local. O workflow de deploy manual ainda depende da configuração AWS e da revisão do PR para a branch padrão. |
+| CI da revisão `314660d` | [Build and test (Java 17)](https://github.com/ygorsmedeiros/FeedFlow/actions/runs/43981155889/job/133697658950). O build executou 46 testes da API, 12 de notificações e 14 de relatórios. A etapa com DynamoDB Local repetiu os 46 testes da API e executou mais 7 testes de integração, todos aprovados. |
+| API ativa | `200/UP` no health, notas 2 e 9 com `201` e itens persistidos como `CRITICA` e `BAIXA`. A nota 11 retornou `400`. |
+| Relatório e SNS | Os logs registraram publicação do alerta crítico e do relatório da semana de 09 a 15/11. A consulta inicial encontrou zero avaliações. A execução com a amostra sintética autorizada registrou três avaliações. O índice confirmou os dados da amostra e as assinaturas SNS ativas estavam confirmadas. |
+| Monitoramento | A leitura retornou zero alarmes e zero dashboards. A stack separada de monitoramento estava ausente. |
+
+Veja o [roteiro de gravação](docs/demo-script.md) para os comandos, o período da Lambda e o cálculo reproduzível no DynamoDB Local.
 
 ## Escopo implementado
 
