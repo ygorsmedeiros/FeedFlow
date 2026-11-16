@@ -1,18 +1,59 @@
-# Roteiro do vídeo de demonstração (7–10 min)
+# Roteiro do vídeo de demonstração (8 min 30 s)
 
-Pré-requisitos: stack `feedflow-dev` implantada, e-mails de assinatura confirmados, `$URL` = output `ApiUrl`.
+Use a branch `avaliacao-versao-atualizada`, a região `us-east-2` e o perfil AWS `feedflow`. O roteiro usa a aplicação ativa na stack `feedflow-dev`. O monitoramento foi preparado no repositório e sua implantação está bloqueada pela política da conta.
 
-1. **Arquitetura (1 min):** mostrar o diagrama do README e explicar o modelo serverless na AWS.
-2. **Cloud configurada (2 min):** console AWS → CloudFormation (stack), 3 Lambdas, DynamoDB (tabela, GSI `byWeek`, Streams), SNS, SQS, EventBridge Scheduler (segunda 09:00), IAM (roles separadas, boundaries).
-3. **Segurança (1 min):** policies mínimas, criptografia, OIDC (sem chaves no GitHub), throttling da API.
-4. **Avaliação normal (1 min):**
-   `curl -X POST $URL/avaliacao -H 'Content-Type: application/json' -d '{"nota":9,"descricao":"Ótima aula"}'` → 201; item no DynamoDB; **nenhum e-mail**.
-5. **Avaliação crítica (1 min):**
-   `curl -X POST $URL/avaliacao -H 'Content-Type: application/json' -d '{"nota":2,"descricao":"Áudio cortando"}'` → 201; mostrar o **e-mail de urgência** (descrição, urgência, data de envio) chegando.
-6. **Erro de validação (30 s):** `{"nota":11}` → 400.
-7. **Relatório semanal (1 min):** `aws lambda invoke --function-name feedflow-dev-reports --payload '{"source":"feedflow.scheduler.weekly-report"}' --cli-binary-format raw-in-base64-out out.json` → mostrar o e-mail com média, contagem por dia e por urgência.
-8. **Monitoramento (1 min):** CloudWatch → dashboard `feedflow-dev-overview`, lista de alarmes, logs de uma Lambda.
-9. **Deploy automatizado (1 min):** GitHub → Actions → workflow *Deploy (AWS SAM)* verde (testes, deploy, smoke test).
-10. **Repositório (15 s):** mostrar que é público e o README.
+| Tempo | O que mostrar |
+| --- | --- |
+| 0:00–1:00 | Diagrama do README. HTTP API → Lambda da API → DynamoDB. O Stream aciona a Lambda de alertas e o EventBridge Scheduler aciona a Lambda de relatórios. Ambas publicam no SNS. |
+| 1:00–2:00 | CloudFormation em `UPDATE_COMPLETE`, três Lambdas e tabela com Streams e índice `byWeek`. |
+| 2:00–4:00 | Execute os quatro testes HTTP abaixo. Mostre 200/UP, 201/CRITICA, 201/BAIXA e 400. Abra o log de notificações com `publicados=1` e mostre o e-mail de alerta se estiver na caixa de entrada. |
+| 4:00–5:00 | Consulte no DynamoDB os dois IDs das respostas. Mostre nota e urgência. |
+| 5:00–6:30 | Invoque a Lambda do relatório, confira os logs e mostre o e-mail se recebido. A execução de 16/11/2026 publicou o relatório da semana de 09 a 15/11/2026 com zero avaliações. |
+| 6:30–7:30 | Mostre os logs no CloudWatch. Abra `monitoring.yaml` e aponte os sete alarmes, o dashboard e o tópico operacional previstos. Mostre a restrição do CloudFormation registrada no README. |
+| 7:30–8:30 | Mostre o repositório público e a execução de CI da branch. Abra o workflow de deploy direto e informe o estado do PR e do OIDC conforme a evidência disponível na gravação. |
 
-Conferir antes de publicar: áudio, legibilidade da tela, duração aceita pela plataforma.
+## Comandos em ordem (Git Bash)
+
+```bash
+export AWS_PROFILE=feedflow AWS_REGION=us-east-2 AWS_PAGER=
+out() {
+  aws cloudformation describe-stacks --stack-name feedflow-dev \
+    --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue | [0]" --output text
+}
+url=$(out ApiUrl)
+url=${url%/}
+
+curl -sS -i "$url/health"
+curl -sS -i "$url/avaliacao" -H 'Content-Type: application/json' \
+  -d '{"descricao":"Aula confusa","nota":2}'
+curl -sS -i "$url/avaliacao" -H 'Content-Type: application/json' \
+  -d '{"descricao":"Boa aula","nota":9}'
+curl -sS -i "$url/avaliacao" -H 'Content-Type: application/json' \
+  -d '{"descricao":"Teste de nota inválida","nota":11}'
+
+read -r -p 'ID da avaliação crítica: ' critical_id
+read -r -p 'ID da avaliação normal: ' normal_id
+for id in "$critical_id" "$normal_id"; do
+  aws dynamodb get-item --table-name "$(out FeedbackTable)" --consistent-read \
+    --key "{\"id\":{\"S\":\"$id\"}}"
+done
+aws logs tail "$(out NotificationsLogGroup)" --since 10m
+
+report_output=$(mktemp)
+aws lambda invoke --function-name "$(out ReportsFunctionName)" \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"source":"feedflow.scheduler.weekly-report"}' "$report_output"
+cat "$report_output"
+aws logs tail "$(out ReportsLogGroup)" --since 10m
+```
+
+A invocação retorna metadados à parte do corpo `null`. Confira a ausência de `FunctionError` e a linha do log com a semana e o total. Os logs comprovam publicação no SNS. Para comprovar recebimento, capture a caixa de entrada e oculte endereços e dados da conta. Se o tópico operacional for implantado, confira o status da assinatura SNS e abra o e-mail de confirmação, se necessário.
+
+## Limpeza após a entrega
+
+Execute somente após encerrar a entrega e se a stack de monitoramento tiver sido criada.
+
+```bash
+aws cloudformation delete-stack --stack-name feedflow-dev-monitoring --profile feedflow --region us-east-2
+aws cloudformation wait stack-delete-complete --stack-name feedflow-dev-monitoring --profile feedflow --region us-east-2
+```

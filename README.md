@@ -63,29 +63,33 @@ Regra de urgência: nota 0–3 `CRITICA`, 4–6 `MEDIA`, 7–10 `BAIXA`. O PDF d
 
 Recursos criados pelo `template.yaml`:
 
-- **Dashboard** `feedflow-dev-overview`: invocações, erros e duração p95 por Lambda, requisições/4xx/5xx da API, filas de falhas e últimos erros da API.
-- **Alarmes** (ação: SNS `feedflow-dev-ops-alarms` → e-mail): erros em cada uma das três Lambdas, duração p95 da API > 12 s, 5xx na HTTP API e mensagens nas duas filas de falhas.
+- **Dashboard previsto** `feedflow-dev-monitoring-overview`: invocações, erros e duração p95 por Lambda, requisições/4xx/5xx da API e filas de falhas.
+- **Alarmes** (ação: SNS `feedflow-dev-monitoring-ops-alarms` → e-mail): erros em cada uma das três Lambdas, duração p95 da API > 12 s, 5xx na HTTP API e mensagens nas duas filas de falhas.
 - **Logs** com retenção de 14 dias, um log group por função.
 
-Para ver: CloudWatch → Dashboards → `feedflow-dev-overview`; CloudWatch → Alarms.
+Após implantar o monitoramento, abra CloudWatch → Dashboards → `feedflow-dev-monitoring-overview` e CloudWatch → Alarms.
 
-### Instruções de deploy
+### Deploy direto
 
-**Automático (recomendado):** push em `main` executa `.github/workflows/deploy.yml`
-(testes → `sam deploy` por OIDC → smoke test). Configure no GitHub Environment `feedflow-dev`
-as variáveis `AWS_DEPLOY_ROLE_ARN`, `SAM_ARTIFACT_BUCKET` e `ADMIN_EMAIL`. O bootstrap da role
-OIDC está em [docs/sprint7-oidc.md](docs/sprint7-oidc.md) (reaplicar a stack bootstrap, pois ela ganhou
-permissões de CloudWatch e SNS).
+O workflow manual `.github/workflows/deploy.yml` executa os testes com Java 17, atualiza o código das três Lambdas, cria ou atualiza a stack `feedflow-dev-monitoring` e executa o smoke test. Ele requer a variável `AWS_DEPLOY_ROLE_ARN` e o secret `ADMIN_EMAIL` no GitHub Environment `feedflow-dev`. O arquivo do workflow deve estar na branch padrão para habilitar o disparo manual.
 
-**Manual:**
+Para conferir os recursos e os comandos com Git Bash:
 
-```powershell
-.\scripts\deploy-aws.ps1 -Authorization PREVIEW -PreviewOnly -AdminEmail admin@exemplo.com
-.\scripts\deploy-aws.ps1 -Authorization DEPLOY -ChangeSetPreviewApproved -AdminEmail admin@exemplo.com
+```bash
+bash ./mvnw -B -ntp clean verify
+export AWS_PROFILE=feedflow AWS_REGION=us-east-2
+read -r -p 'E-mail de notificações: ' ADMIN_EMAIL
+export ADMIN_EMAIL
+bash ./scripts/deploy-direct.sh --dry-run
 ```
 
-Depois do deploy, **confirme os três e-mails de assinatura** que a AWS enviar ao administrador.
-Teste ponta a ponta: veja o [roteiro de demonstração](docs/demo-script.md).
+Com as permissões aprovadas, execute o script sem `--dry-run`. O script usa os outputs de `feedflow-dev`, aguarda cada atualização de Lambda e a conclusão do CloudFormation. Ele atualiza código em funções existentes e implanta o monitoramento em uma stack própria. As assinaturas dos tópicos de alerta crítico e relatório semanal pertencem à stack existente. O tópico operacional é definido por `monitoring.yaml`. Consulte o [roteiro de demonstração](docs/demo-script.md) para testar a aplicação e preparar a gravação.
+
+## Limitações da conta AWS
+
+Na avaliação de 16/11/2026 em `us-east-2`, `iam:ListOpenIDConnectProviders` e `iam:GetOpenIDConnectProvider` retornaram `AccessDenied` por SCP. A simulação da role de sessão indicou `explicitDeny` da organização para `cloudformation:CreateStack` e `cloudformation:UpdateStack` sobre `feedflow-dev-monitoring`, além de `lambda:UpdateFunctionCode`. O deploy direto ficou bloqueado. A sintaxe do script passou no Git Bash, o template principal passou em `sam validate --lint` e o template de monitoramento foi aceito por `cloudformation validate-template`.
+
+Na stack ativa `feedflow-dev`, os testes HTTP retornaram 200, 201, 201 e 400. As duas avaliações válidas foram lidas na tabela com urgências `CRITICA` e `BAIXA`, e o PITR estava desabilitado. Os logs das Lambdas registraram publicação do alerta crítico e do relatório da semana de 09 a 15/11/2026, com zero avaliações nesse período.
 
 ## Escopo implementado
 
@@ -101,12 +105,12 @@ Teste ponta a ponta: veja o [roteiro de demonstração](docs/demo-script.md).
 - Lambda Java 17 que consulta a semana anterior, agrega métricas e publica um relatório completo em tópico SNS exclusivo;
 - EventBridge Scheduler às segundas-feiras, 09:00 em `America/Sao_Paulo`, com retries e destino SQS;
 - template AWS SAM com HTTP API v2, três Lambdas Java 17, DynamoDB, SNS, SQS, Scheduler, log groups, IAM mínimo, alarmes CloudWatch e dashboard;
-- deploy automatizado por GitHub Actions + OIDC (`.github/workflows/deploy.yml`);
+- workflow manual de deploy por GitHub Actions + OIDC (`.github/workflows/deploy.yml`);
 - scripts PowerShell de build, validação, deploy manual, consulta e remoção da stack;
 - testes automatizados unitários, HTTP e de integração real com DynamoDB Local;
 - validação explícita do limite SNS de 256 KiB em UTF-8 antes da publicação do relatório.
 
-Não fazem parte deste escopo: frontend, autenticação da API ou deploy automático. A stack `feedflow-dev` existe em `us-east-2`; alterações futuras permanecem sujeitas a preview e aprovação humana. Nenhuma assinatura SNS de e-mail é criada automaticamente. Uma avaliação válida retorna HTTP 201 somente depois que o DynamoDB confirma a gravação.
+A aplicação usa API pública em `us-east-2` e recebe avaliações sem frontend. Uma avaliação válida retorna HTTP 201 somente depois que o DynamoDB confirma a gravação.
 
 ## Estrutura
 
