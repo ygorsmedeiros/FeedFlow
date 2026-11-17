@@ -7,7 +7,7 @@ pushes para `main`, usa Java 17, Maven Wrapper, cache Maven, build completo e te
 integração com DynamoDB Local. O workflow possui apenas `contents: read`, não recebe
 credenciais AWS e não realiza deploy.
 
-O CD permanece manual. Não existe workflow de deploy automático e não há credencial
+O deploy automatizado está em `.github/workflows/deploy.yml` (OIDC). O caminho manual abaixo continua válido. Não há credencial
 permanente no GitHub. O operador usa o perfil local `feedflow`, na região `us-east-2`, e cada
 deploy exige preview, aprovação humana declarada e a confirmação interativa do change set.
 

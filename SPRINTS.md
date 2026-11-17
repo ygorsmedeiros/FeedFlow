@@ -8,6 +8,23 @@
 > **Repositório:** https://github.com/ygorsmedeiros/FeedFlow
 > **Status inicial:** planejamento; nenhuma sprint técnica foi validada ainda.
 
+## Status real da entrega (resumo)
+
+| Requisito do PDF | Estado | Evidência |
+|---|---|---|
+| Serverless, mínimo 2 funções, responsabilidade única | Pronto | 3 Lambdas em `template.yaml` |
+| `POST /avaliacao`, urgência, validação | Pronto | `feedflow-api` + testes |
+| Banco e componentes de suporte | Pronto (template) | DynamoDB, SNS, SQS, Scheduler |
+| Notificação crítica por e-mail | Código pronto; **falta confirmar assinatura após deploy** | parâmetro `AdminEmail` |
+| Relatório semanal com média | Código pronto; **falta teste real na AWS** | `feedflow-reports` |
+| Deploy automatizado | Pronto (workflow); **falta configurar Environment e rodar** | `.github/workflows/deploy.yml` |
+| Monitoramento | Pronto (alarmes + dashboard no template); **falta ver no console** | `template.yaml` |
+| Documentação (arquitetura, deploy, monitoramento, funções) | Pronto | `README.md` |
+| Roteiro do vídeo | Pronto | `docs/demo-script.md` |
+| Deploy real e teste ponta a ponta | **Pendente (depende da conta AWS)** | — |
+| Vídeo | **Pendente** | — |
+| Repositório público | **Pendente** | — |
+
 ## 0. Como usar este documento
 
 - `[ ]` pendente; `[x]` concluído **com evidência**; `[-]` bloqueado ou não aplicável (explicar o motivo).

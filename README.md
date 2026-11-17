@@ -1,6 +1,119 @@
-﻿# FeedFlow
+# FeedFlow
 
-FeedFlow é o projeto da Fase 4 do FIAP Tech Challenge. Esta versão contém a fundação técnica, a API e persistência de avaliações, a infraestrutura AWS SAM, as Lambdas de notificações e relatórios e a integração contínua implementadas nas Sprints 1–7.
+FeedFlow é o projeto da Fase 4 do FIAP Tech Challenge. A entrega cobre as Sprints 1 a 7, com API e persistência de avaliações, notificações, relatórios, integração contínua e implantação pela AWS CLI.
+
+## Arquitetura da solução
+
+### Modelo de cloud escolhido
+
+**AWS, 100% serverless (FaaS + serviços gerenciados), região `us-east-2`.** Não há servidor para
+provisionar, aplicar patch ou escalar: o custo é por uso (importante com créditos limitados) e o
+desacoplamento por eventos garante a responsabilidade única de cada função.
+
+```mermaid
+flowchart LR
+    A[Estudante] -->|POST /avaliacao| G[API Gateway HTTP API]
+    G --> L1[Lambda API<br/>feedflow-api]
+    L1 --> D[(DynamoDB<br/>FeedFlowFeedback + GSI byWeek)]
+    D -- Streams INSERT --> L2[Lambda Notificações<br/>feedflow-notifications]
+    L2 -- somente CRITICA --> S1[SNS critical-alerts] --> E1[E-mail do admin]
+    L2 -. falha esgotada .-> Q1[SQS falhas]
+    EB[EventBridge Scheduler<br/>seg 09:00 America/Sao_Paulo] --> L3[Lambda Relatórios<br/>feedflow-reports]
+    L3 -- Query byWeek --> D
+    L3 --> S2[SNS weekly-reports] --> E1
+    L3 -. falha .-> Q2[SQS falhas]
+    L1 & L2 & L3 --> CW[CloudWatch Logs e métricas]
+    CW --> S3[Alarmes, dashboard e SNS operacional]
+```
+
+### Componentes e responsabilidades
+
+| Componente | Responsabilidade única | Por que foi escolhido |
+|---|---|---|
+| API Gateway HTTP API v2 | Expor `GET /health` e `POST /avaliacao` via HTTPS, com throttling (10 req/s, burst 20) | Mais barato e simples que REST API; só duas rotas |
+| Lambda `feedflow-api` | Validar, classificar e gravar a avaliação | Sem estado; escala a zero |
+| DynamoDB | Armazenar avaliações; GSI `byWeek` evita `Scan` no relatório | On-demand, sem servidor, Streams nativos |
+| Lambda `feedflow-notifications` | Reagir a novas avaliações **críticas** e publicar o alerta | Acionada por evento, sem polling |
+| SNS | Entregar e-mails (alertas, relatório, alarmes) | Assinatura de e-mail gerenciada |
+| Lambda `feedflow-reports` | Agregar a semana anterior e publicar o relatório | Execução agendada, independente da API |
+| EventBridge Scheduler | Disparar o relatório toda segunda, 09:00 | Suporta fuso horário e retry |
+| SQS (filas de falhas) | Reter eventos que esgotaram os retries | Nada se perde em silêncio |
+| CloudWatch | Logs, métricas, alarmes e dashboard | Nativo, sem agente |
+
+### Documentação das funções
+
+| Função | Gatilho | Entrada | Saída/efeito | Handler |
+|---|---|---|---|---|
+| `feedflow-api` | API Gateway | `{"descricao": string, "nota": 0..10}` | `201` com id/urgência; `400` entrada inválida; `500` falha de persistência | `QuarkusStreamHandler::handleRequest` |
+| `feedflow-notifications` | DynamoDB Streams (`INSERT`) | Registro do stream | E-mail com **descrição, urgência e data de envio** (mais id, nota e data de geração do alerta), somente `CRITICA` | `CriticalNotificationHandler::handleRequest` |
+| `feedflow-reports` | EventBridge Scheduler | `{"source":"feedflow.scheduler.weekly-report"}` | E-mail com **média, descrição, urgência e data de cada avaliação, quantidade por dia e por urgência** | `WeeklyReportHandler::handleRequest` |
+
+Regra de urgência: nota 0–3 `CRITICA`, 4–6 `MEDIA`, 7–10 `BAIXA`. O PDF do desafio escreve
+`POST /avaliação`; a rota implementada é `POST /avaliacao` (sem acento, por segurança em URLs).
+
+### Controles verificados na AWS
+
+- O Stream da tabela usa `NEW_IMAGE`. O mapeamento de notificações estava habilitado, com resposta parcial, divisão de lote em falha, 3 retentativas e destino SQS para falhas.
+- O Scheduler do relatório estava habilitado para segundas-feiras às 09:00 em `America/Sao_Paulo`, com 2 retentativas, idade máxima de 1 hora e fila de falhas SQS.
+- A HTTP API pública usa throttling de 10 requisições por segundo e burst de 20. As duas filas de falhas têm criptografia gerenciada pelo SQS e retenção de 14 dias.
+- O PITR estava desabilitado na tabela da conta de avaliação.
+
+O template principal descreve as permissões dos serviços.
+
+## Deploy
+
+O script `scripts/deploy-direct.sh` atualiza o código das três Lambdas com `aws lambda update-function-code` e cria ou atualiza `feedflow-dev-monitoring` a partir de `monitoring.yaml`. A stack de monitoramento é separada e o template prescinde da diretiva `Transform` do SAM, o que permite criá-la com `CreateStack`. A simulação IAM indicou negação para as operações de change set usadas pelo `sam deploy`. A implantação pela AWS CLI foi verificada com as operações diretas.
+
+Antes de atualizar as funções, faça backup dos pacotes atuais com `aws lambda get-function` e confira o `CodeSha256` de cada função após a atualização. Para inspecionar o plano no Git Bash, use:
+
+```bash
+bash ./mvnw -B -ntp clean verify
+export AWS_PROFILE=feedflow AWS_REGION=us-east-2
+read -r -p 'E-mail de notificações: ' ADMIN_EMAIL
+export ADMIN_EMAIL
+bash ./scripts/deploy-direct.sh --dry-run
+```
+
+O modo `--dry-run` consulta os outputs, valida os ZIPs e imprime os comandos de alteração. Com as permissões aprovadas, execute o script sem `--dry-run` para aplicar o plano e aguardar o estado final das funções e da stack.
+
+## Monitoramento
+
+A stack `feedflow-dev-monitoring` está em `CREATE_COMPLETE`. Ela gerencia o tópico SNS `feedflow-dev-monitoring-ops-alarms` e o dashboard `feedflow-dev-monitoring-overview`, com cinco widgets de métricas. Os sete alarmes cobrem:
+
+- Erros da Lambda da API.
+- Duração p95 da API acima de 12 segundos.
+- Erros da Lambda de notificações.
+- Erros da Lambda de relatórios.
+- Respostas 5xx do API Gateway.
+- Fila de falhas das notificações com mensagens visíveis.
+- Fila de falhas dos relatórios com mensagens visíveis.
+
+A assinatura do tópico de alarmes estava em `PendingConfirmation` na última verificação. Para receber os alarmes, confirme a assinatura pelo e-mail enviado pelo SNS.
+
+## Limitações
+
+As três Lambdas e a stack de monitoramento foram implantadas pela AWS CLI em `us-east-2`. O workflow `.github/workflows/deploy.yml` foi preparado para o Environment `feedflow-dev`. A chamada real `iam:CreateOpenIDConnectProvider` retornou `AccessDenied` por uma SCP da organização. O deploy pelo GitHub Actions depende da liberação do provedor, da criação da role e da configuração da variável `AWS_DEPLOY_ROLE_ARN`. O projeto só adotará chaves de acesso de longa duração com autorização da administração.
+
+O código das Lambdas foi atualizado fora do CloudFormation. Um futuro `sam deploy` da stack `feedflow-dev` pode sobrescrevê-lo com os artefatos daquele deploy.
+
+### Validação da entrega
+
+| Item | Evidência verificada |
+| --- | --- |
+| `template.yaml` | `sam validate --template-file template.yaml --profile feedflow --region us-east-2 --lint` |
+| `monitoring.yaml` | `aws cloudformation validate-template --template-body file://monitoring.yaml --profile feedflow --region us-east-2` |
+| `scripts/deploy-direct.sh` | `bash -n scripts/deploy-direct.sh` e dry-run com os outputs de `feedflow-dev` e os três ZIPs. |
+| `.github/workflows/deploy.yml` | Arquivo remoto conferido com a cópia local. O workflow de deploy manual ainda depende da configuração AWS e da revisão do PR para a branch padrão. |
+| CI da revisão `314660d` | [Build and test (Java 17)](https://github.com/ygorsmedeiros/FeedFlow/actions/runs/43981155889/job/133697658950). O build executou 46 testes da API, 12 de notificações e 14 de relatórios. A etapa com DynamoDB Local repetiu os 46 testes da API e executou mais 7 testes de integração, todos aprovados. |
+| API ativa | `200/UP` no health, notas 2 e 9 com `201` e itens persistidos como `CRITICA` e `BAIXA`. A nota 11 retornou `400`. |
+| Relatório e SNS | Os logs registraram publicação do alerta crítico e do relatório da semana de 09 a 15/11. A consulta inicial encontrou zero avaliações. A execução com a amostra sintética autorizada registrou três avaliações. O índice confirmou os dados da amostra e as assinaturas SNS ativas estavam confirmadas. |
+| Monitoramento | Stack em `CREATE_COMPLETE`, sete alarmes, dashboard com cinco widgets e tópico SNS de operação. |
+
+Veja o [roteiro de gravação](docs/demo-script.md) para os comandos, o período da Lambda e o cálculo reproduzível no DynamoDB Local.
+
+## Vídeo de demonstração
+
+Vídeo: LINK_A_DEFINIR. O link será preenchido após a gravação e o upload como vídeo não listado.
 
 ## Escopo implementado
 
@@ -15,12 +128,13 @@ FeedFlow é o projeto da Fase 4 do FIAP Tech Challenge. Esta versão contém a f
 - resposta parcial por lote, retries limitados e destino SQS para falhas esgotadas;
 - Lambda Java 17 que consulta a semana anterior, agrega métricas e publica um relatório completo em tópico SNS exclusivo;
 - EventBridge Scheduler às segundas-feiras, 09:00 em `America/Sao_Paulo`, com retries e destino SQS;
-- template AWS SAM com HTTP API v2, três Lambdas Java 17, DynamoDB, SNS, SQS, Scheduler, log groups e IAM mínimo;
+- template AWS SAM com HTTP API v2, três Lambdas Java 17, DynamoDB, SNS, SQS, Scheduler, log groups, IAM mínimo, alarmes CloudWatch e dashboard;
+- workflow manual de deploy preparado para GitHub Actions via OIDC (`.github/workflows/deploy.yml`), com autenticação pendente;
 - scripts PowerShell de build, validação, deploy manual, consulta e remoção da stack;
 - testes automatizados unitários, HTTP e de integração real com DynamoDB Local;
 - validação explícita do limite SNS de 256 KiB em UTF-8 antes da publicação do relatório.
 
-Não fazem parte deste escopo: frontend, autenticação da API ou deploy automático. A stack `feedflow-dev` existe em `us-east-2`; alterações futuras permanecem sujeitas a preview e aprovação humana. Nenhuma assinatura SNS de e-mail é criada automaticamente. Uma avaliação válida retorna HTTP 201 somente depois que o DynamoDB confirma a gravação.
+A aplicação usa API pública em `us-east-2` e recebe avaliações sem frontend. Uma avaliação válida retorna HTTP 201 somente depois que o DynamoDB confirma a gravação.
 
 ## Estrutura
 
@@ -356,7 +470,9 @@ Testes com DynamoDB Local:
 .\scripts\build-and-test.ps1 -IncludeDynamoDbLocalTests
 ```
 
-Preview obrigatório, sem execução do change set:
+O procedimento original da Sprint 7 usava change sets. Os comandos abaixo ficam como referência histórica. Para o procedimento da entrega, consulte [Deploy](#deploy).
+
+Preview do change set:
 
 ```powershell
 .\scripts\deploy-aws.ps1 -Authorization PREVIEW -PreviewOnly
@@ -372,4 +488,4 @@ O script usa o perfil `feedflow`, a região `us-east-2` (Ohio) e a stack `feedfl
 
 ## Próximos passos
 
-O Tech Lead deverá revisar o IAM das Lambdas, os limites de retry/idade, as filas de falhas, a ausência deliberada de deduplicação durável, o limite de 256 KiB do relatório e a estratégia para criar assinaturas SNS com endereços reais. O deploy e os testes ponta a ponta no API Gateway/Lambda/DynamoDB/SNS/Scheduler reais permanecem pendentes de autorização explícita. O Compose e as credenciais fictícias existem exclusivamente para desenvolvimento local.
+O Tech Lead deverá revisar o IAM das Lambdas, os limites de retry/idade, as filas de falhas, a ausência deliberada de deduplicação durável, o limite de 256 KiB do relatório e a estratégia para criar assinaturas SNS com endereços reais. As evidências do deploy e da validação em AWS estão descritas acima. O Compose e as credenciais fictícias existem exclusivamente para desenvolvimento local.
