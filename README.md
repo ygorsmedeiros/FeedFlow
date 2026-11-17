@@ -1,6 +1,6 @@
 # FeedFlow
 
-FeedFlow é o projeto da Fase 4 do FIAP Tech Challenge. Esta versão contém a fundação técnica, a API e persistência de avaliações, a infraestrutura AWS SAM, as Lambdas de notificações e relatórios e a integração contínua implementadas nas Sprints 1–7.
+FeedFlow é o projeto da Fase 4 do FIAP Tech Challenge. A entrega cobre as Sprints 1 a 7, com API e persistência de avaliações, notificações, relatórios, integração contínua e implantação pela AWS CLI.
 
 ## Arquitetura da solução
 
@@ -23,7 +23,7 @@ flowchart LR
     L3 --> S2[SNS weekly-reports] --> E1
     L3 -. falha .-> Q2[SQS falhas]
     L1 & L2 & L3 --> CW[CloudWatch Logs e métricas]
-    CW -. monitoramento previsto .-> S3[Alarmes, dashboard e SNS operacional]
+    CW --> S3[Alarmes, dashboard e SNS operacional]
 ```
 
 ### Componentes e responsabilidades
@@ -58,21 +58,13 @@ Regra de urgência: nota 0–3 `CRITICA`, 4–6 `MEDIA`, 7–10 `BAIXA`. O PDF d
 - A HTTP API pública usa throttling de 10 requisições por segundo e burst de 20. As duas filas de falhas têm criptografia gerenciada pelo SQS e retenção de 14 dias.
 - O PITR estava desabilitado na tabela da conta de avaliação.
 
-O template principal descreve as permissões dos serviços. A configuração OIDC e os recursos de monitoramento previstos fazem parte da entrega em código.
+O template principal descreve as permissões dos serviços.
 
-### Monitoramento previsto
+## Deploy
 
-A stack `feedflow-dev-monitoring` usa `monitoring.yaml` para definir um dashboard, sete alarmes e um tópico operacional:
+O script `scripts/deploy-direct.sh` atualiza o código das três Lambdas com `aws lambda update-function-code` e cria ou atualiza `feedflow-dev-monitoring` a partir de `monitoring.yaml`. A stack de monitoramento é separada e o template prescinde da diretiva `Transform` do SAM, o que permite criá-la com `CreateStack`. A simulação IAM indicou negação para as operações de change set usadas pelo `sam deploy`. A implantação pela AWS CLI foi verificada com as operações diretas.
 
-- Dashboard `feedflow-dev-monitoring-overview`: invocações, erros e duração p95 das Lambdas, requisições e erros da HTTP API e filas de falhas.
-- Alarmes: erro nas três Lambdas, duração p95 da API acima de 12 s, 5xx da HTTP API e mensagens nas duas filas de falhas.
-- Tópico SNS `feedflow-dev-monitoring-ops-alarms` como destino dos alarmes.
-
-### Deploy direto
-
-O workflow manual `.github/workflows/deploy.yml` executa os testes com Java 17, atualiza o código das três Lambdas, cria ou atualiza a stack `feedflow-dev-monitoring` e executa o smoke test. Ele requer a variável `AWS_DEPLOY_ROLE_ARN` e o secret `ADMIN_EMAIL` no GitHub Environment `feedflow-dev`. O arquivo do workflow deve estar na branch padrão para habilitar o disparo manual.
-
-Para conferir os recursos e os comandos com Git Bash:
+Antes de atualizar as funções, faça backup dos pacotes atuais com `aws lambda get-function` e confira o `CodeSha256` de cada função após a atualização. Para inspecionar o plano no Git Bash, use:
 
 ```bash
 bash ./mvnw -B -ntp clean verify
@@ -82,13 +74,27 @@ export ADMIN_EMAIL
 bash ./scripts/deploy-direct.sh --dry-run
 ```
 
-Com as permissões aprovadas, execute o script sem `--dry-run`. O script usa os outputs de `feedflow-dev`, aguarda cada atualização de Lambda e a conclusão do CloudFormation. Ele atualiza código em funções existentes e implanta o monitoramento em uma stack própria. As assinaturas dos tópicos de alerta crítico e relatório semanal pertencem à stack existente. O tópico operacional é definido por `monitoring.yaml`. Consulte o [roteiro de demonstração](docs/demo-script.md) para testar a aplicação e preparar a gravação.
+O modo `--dry-run` consulta os outputs, valida os ZIPs e imprime os comandos de alteração. Com as permissões aprovadas, execute o script sem `--dry-run` para aplicar o plano e aguardar o estado final das funções e da stack.
 
-## Limitações da conta AWS
+## Monitoramento
 
-A demonstração de 16/11/2026 usa a implantação existente na stack `feedflow-dev`, em `us-east-2`. O deploy direto da revisão de avaliação ficou bloqueado. Os hashes das três funções implantadas diferiram dos hashes dos ZIPs locais. Não foi possível associar o código implantado a um commit exato.
+A stack `feedflow-dev-monitoring` está em `CREATE_COMPLETE`. Ela gerencia o tópico SNS `feedflow-dev-monitoring-ops-alarms` e o dashboard `feedflow-dev-monitoring-overview`, com cinco widgets de métricas. Os sete alarmes cobrem:
 
-A AWS retornou `AccessDenied` por SCP nas chamadas reais `iam:ListOpenIDConnectProviders` e `iam:GetOpenIDConnectProvider`. Para `cloudformation:CreateStack`, `cloudformation:UpdateStack` e `lambda:UpdateFunctionCode`, a evidência é a simulação IAM com `explicitDeny` e `AllowedByOrganizations=false`. Essas três operações de escrita não foram chamadas. A consulta à organização confirmou que o perfil está em uma conta membro. A leitura da política e de seus alvos foi negada. Não foi possível identificar o administrador com este perfil.
+- Erros da Lambda da API.
+- Duração p95 da API acima de 12 segundos.
+- Erros da Lambda de notificações.
+- Erros da Lambda de relatórios.
+- Respostas 5xx do API Gateway.
+- Fila de falhas das notificações com mensagens visíveis.
+- Fila de falhas dos relatórios com mensagens visíveis.
+
+A assinatura do tópico de alarmes estava em `PendingConfirmation` na última verificação. Para receber os alarmes, confirme a assinatura pelo e-mail enviado pelo SNS.
+
+## Limitações
+
+As três Lambdas e a stack de monitoramento foram implantadas pela AWS CLI em `us-east-2`. O workflow `.github/workflows/deploy.yml` foi preparado para o Environment `feedflow-dev`. A chamada real `iam:CreateOpenIDConnectProvider` retornou `AccessDenied` por uma SCP da organização. O deploy pelo GitHub Actions depende da liberação do provedor, da criação da role e da configuração da variável `AWS_DEPLOY_ROLE_ARN`. O projeto só adotará chaves de acesso de longa duração com autorização da administração.
+
+O código das Lambdas foi atualizado fora do CloudFormation. Um futuro `sam deploy` da stack `feedflow-dev` pode sobrescrevê-lo com os artefatos daquele deploy.
 
 ### Validação da entrega
 
@@ -101,9 +107,13 @@ A AWS retornou `AccessDenied` por SCP nas chamadas reais `iam:ListOpenIDConnectP
 | CI da revisão `314660d` | [Build and test (Java 17)](https://github.com/ygorsmedeiros/FeedFlow/actions/runs/43981155889/job/133697658950). O build executou 46 testes da API, 12 de notificações e 14 de relatórios. A etapa com DynamoDB Local repetiu os 46 testes da API e executou mais 7 testes de integração, todos aprovados. |
 | API ativa | `200/UP` no health, notas 2 e 9 com `201` e itens persistidos como `CRITICA` e `BAIXA`. A nota 11 retornou `400`. |
 | Relatório e SNS | Os logs registraram publicação do alerta crítico e do relatório da semana de 09 a 15/11. A consulta inicial encontrou zero avaliações. A execução com a amostra sintética autorizada registrou três avaliações. O índice confirmou os dados da amostra e as assinaturas SNS ativas estavam confirmadas. |
-| Monitoramento | A leitura retornou zero alarmes e zero dashboards. A stack separada de monitoramento estava ausente. |
+| Monitoramento | Stack em `CREATE_COMPLETE`, sete alarmes, dashboard com cinco widgets e tópico SNS de operação. |
 
 Veja o [roteiro de gravação](docs/demo-script.md) para os comandos, o período da Lambda e o cálculo reproduzível no DynamoDB Local.
+
+## Vídeo de demonstração
+
+Vídeo: LINK_A_DEFINIR. O link será preenchido após a gravação e o upload como vídeo não listado.
 
 ## Escopo implementado
 
@@ -119,7 +129,7 @@ Veja o [roteiro de gravação](docs/demo-script.md) para os comandos, o período
 - Lambda Java 17 que consulta a semana anterior, agrega métricas e publica um relatório completo em tópico SNS exclusivo;
 - EventBridge Scheduler às segundas-feiras, 09:00 em `America/Sao_Paulo`, com retries e destino SQS;
 - template AWS SAM com HTTP API v2, três Lambdas Java 17, DynamoDB, SNS, SQS, Scheduler, log groups, IAM mínimo, alarmes CloudWatch e dashboard;
-- workflow manual de deploy por GitHub Actions + OIDC (`.github/workflows/deploy.yml`);
+- workflow manual de deploy preparado para GitHub Actions via OIDC (`.github/workflows/deploy.yml`), com autenticação pendente;
 - scripts PowerShell de build, validação, deploy manual, consulta e remoção da stack;
 - testes automatizados unitários, HTTP e de integração real com DynamoDB Local;
 - validação explícita do limite SNS de 256 KiB em UTF-8 antes da publicação do relatório.
@@ -460,7 +470,9 @@ Testes com DynamoDB Local:
 .\scripts\build-and-test.ps1 -IncludeDynamoDbLocalTests
 ```
 
-Preview obrigatório, sem execução do change set:
+O procedimento original da Sprint 7 usava change sets. Os comandos abaixo ficam como referência histórica. Para o procedimento da entrega, consulte [Deploy](#deploy).
+
+Preview do change set:
 
 ```powershell
 .\scripts\deploy-aws.ps1 -Authorization PREVIEW -PreviewOnly
@@ -476,4 +488,4 @@ O script usa o perfil `feedflow`, a região `us-east-2` (Ohio) e a stack `feedfl
 
 ## Próximos passos
 
-O Tech Lead deverá revisar o IAM das Lambdas, os limites de retry/idade, as filas de falhas, a ausência deliberada de deduplicação durável, o limite de 256 KiB do relatório e a estratégia para criar assinaturas SNS com endereços reais. O deploy e os testes ponta a ponta no API Gateway/Lambda/DynamoDB/SNS/Scheduler reais permanecem pendentes de autorização explícita. O Compose e as credenciais fictícias existem exclusivamente para desenvolvimento local.
+O Tech Lead deverá revisar o IAM das Lambdas, os limites de retry/idade, as filas de falhas, a ausência deliberada de deduplicação durável, o limite de 256 KiB do relatório e a estratégia para criar assinaturas SNS com endereços reais. As evidências do deploy e da validação em AWS estão descritas acima. O Compose e as credenciais fictícias existem exclusivamente para desenvolvimento local.
