@@ -102,7 +102,6 @@ FeedFlow/
     security.md
     test-evidence.md
     demo-script.md
-  AGENTS.md
   SPRINTS.md
   FEEDFLOW_SPEC_PRE_CODIGO.md
   README.md
@@ -273,7 +272,7 @@ Tabela `FeedFlowFeedback` (nome parametrizado por ambiente):
 | Observabilidade | Logs, métricas, alarmes verificáveis |
 | Entrega | Repositório público, README completo, vídeo e evidências |
 
-**Evidência por sprint:** comando executado, resultado real, captura ou log sem segredos, commit associado, pendências e aprovação do Tech Lead. Não considerar testes 'passados' apenas por declaração do Codex.
+**Evidência por sprint:** comando executado, resultado real, captura ou log sem segredos, commit associado, pendências e aprovação do Tech Lead. Não considerar testes 'passados' sem evidência verificável.
 
 ## 12. Riscos e decisões preventivas
 
@@ -286,9 +285,9 @@ Tabela `FeedFlowFeedback` (nome parametrizado por ambiente):
 7. **Prazo:** primeiro deploy cedo; não deixar CI/CD, documentação e vídeo para a véspera.
 8. **Segurança:** endpoint público com proteção operacional mínima; somente dados sintéticos.
 
-## 13. Sequência recomendada (antes e depois do Codex)
+## 13. Sequência recomendada de planejamento e implementação
 
-**Sem Codex, agora:**
+**Planejamento e preparação:**
 
 - [x] Arquitetura, contrato HTTP, segurança, estrutura modular e estratégia de testes aprovados pelo Tech Lead.
 - [x] Urgência, descrição condicional, período semanal, fuso e formato do relatório aprovados.
@@ -299,7 +298,7 @@ Tabela `FeedFlowFeedback` (nome parametrizado por ambiente):
 - [ ] Planejar AWS agora; criar/configurar conta, MFA e orçamento na Sprint 3 e obrigatoriamente antes do deploy da Sprint 4.
 - [ ] Salvar esta especificação e `SPRINTS.md` na raiz do repositório.
 
-**Codex, após aprovação:**
+**Implementação após aprovação:**
 
 1. Gerar somente estrutura Maven multi-módulo, Quarkus API mínima, `GET /health`, testes e documentação inicial.
 2. Executar testes e demonstrar build com Java 17.
