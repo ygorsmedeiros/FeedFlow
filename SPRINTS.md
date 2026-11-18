@@ -4,7 +4,7 @@
 > **Desafio:** FIAP — Tech Challenge, Fase 4
 > **Prazo informado:** 17/11/2026
 > **Stack definida:** Java **17**, Quarkus 3.x compatível, Maven Wrapper, AWS (Lambda, API Gateway, DynamoDB, DynamoDB Streams, SNS, EventBridge Scheduler, CloudWatch), AWS SAM, GitHub Actions.
-> **IDE:** IntelliJ IDEA | **Agente de desenvolvimento:** aplicativo Codex
+> **IDE:** IntelliJ IDEA | **Ambiente de desenvolvimento:** Java 17 e Maven Wrapper
 > **Repositório:** https://github.com/ygorsmedeiros/FeedFlow
 > **Status inicial:** planejamento; nenhuma sprint técnica foi validada ainda.
 
@@ -28,9 +28,9 @@
 ## 0. Como usar este documento
 
 - `[ ]` pendente; `[x]` concluído **com evidência**; `[-]` bloqueado ou não aplicável (explicar o motivo).
-- **Não marcar como concluído apenas porque o Codex disse que implementou.** Validar com testes, execução local, evidência na AWS ou inspeção do GitHub.
+- **Não marcar como concluído sem evidência verificável.** Validar com testes, execução local, evidência na AWS ou inspeção do GitHub.
 - Ao terminar cada sprint, registrar: **data, commit, testes executados, evidências, problemas e decisão de aprovação**.
-- O Codex pode propor mudanças de arquitetura, mas deve explicar o impacto e obter aprovação antes de alterar o escopo.
+- Mudanças de arquitetura devem ter impacto explicado e aprovação antes de alterar o escopo.
 - Não realizar commit, push, deploy ou criar recursos pagos sem autorização explícita.
 - Este arquivo deve permanecer na **raiz do repositório**, versionado junto com o código.
 - **Fonte dos requisitos obrigatórios:** enunciado `ADJT - Fase 4 - Tech Challenge_rev.pdf` da FIAP. Escolhas de arquitetura, critérios de urgência, códigos HTTP e ferramentas são **decisões do projeto**, não imposições do enunciado.
@@ -84,7 +84,7 @@
 
 - [x] Criar pasta local `FeedFlow`.
 - [x] Inicializar Git, configurar branch `main` e enviar primeiro commit ao GitHub (push confirmado no terminal).
-- [ ] Confirmar `git status`, `git remote -v` e diretório correto no IntelliJ e no Codex.
+- [ ] Confirmar `git status`, `git remote -v` e o diretório correto no IntelliJ e no terminal.
 - [ ] Configurar IntelliJ Project SDK = **JDK 17** e Maven JVM = **JDK 17**.
 - [ ] Confirmar no terminal `java -version`, `mvn -version` e `git status` (não presumir que o Java 17 está ativo apenas por estar instalado).
 - [ ] Definir `maven.compiler.release=17` ou configuração equivalente e documentar uso do JDK 17.
@@ -94,7 +94,7 @@
 - [ ] Planejar a região AWS, as permissões e o procedimento de criação/configuração da conta; **não é necessário ter conta ativa nesta sprint**.
 - [ ] Registrar a regra: configurar MFA e AWS Budget/alertas **antes** de criar recursos da Sprint 4; alertas de custo não bloqueiam cobranças.
 - [ ] Planejar IAM de menor privilégio e política de segredos (sem chaves no GitHub).
-- [ ] Criar `AGENTS.md` com regras de trabalho para o Codex.
+- [ ] Documentar as regras de trabalho e os critérios de revisão técnica do projeto.
 - [ ] Versionar este `SPRINTS.md` e `.gitignore`.
 
 **Aceite:** ambiente Java 17 comprovado, arquitetura e regras de negócio registradas, checklist versionado e estratégia de custo/segurança definida. **Conta AWS não é critério de aceite desta sprint.**
@@ -333,7 +333,7 @@
 - [ ] Arquitetura reativa, Kafka, RabbitMQ, GraphQL, gRPC e microsserviços adicionais — **não exigidos** neste enunciado.
 - [ ] Dashboard analítico, filtros avançados, paginação e métricas sofisticadas — **melhorias futuras**.
 
-## 5. Padrão de execução de cada sprint com o Codex
+## 5. Padrão de execução e revisão de cada sprint
 
 1. Ler este `SPRINTS.md` e identificar apenas os itens da sprint atual.
 2. Propor implementação mínima e critérios de aceite; não ampliar escopo sem aprovação.
